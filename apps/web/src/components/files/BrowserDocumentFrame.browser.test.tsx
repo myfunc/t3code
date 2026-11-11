@@ -1,10 +1,26 @@
 import { injectHtmlRenderBootstrap } from "@t3tools/shared/htmlRender";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
 import { render } from "../../../test/render";
 
 import { HtmlRenderDocument } from "./BrowserDocumentFrame";
+
+const links = vi.hoisted(() => ({
+  knownEnvironments: new Set<string>(),
+  openLink: vi.fn(async (_url: string) => undefined),
+}));
+
+vi.mock(import("~/state/environments"), async (original) => ({
+  ...(await original()),
+  readEnvironment: ((environmentId: string) =>
+    links.knownEnvironments.has(environmentId) ? {} : null) as never,
+}));
+vi.mock(import("~/browser/useOpenLink"), async (original) => ({
+  ...(await original()),
+  useOpenLink: (() => links.openLink) as never,
+}));
 
 const sizeChanged = (height: number) => ({
   jsonrpc: "2.0",
@@ -12,7 +28,51 @@ const sizeChanged = (height: number) => ({
   params: { height },
 });
 
+// A page whose one link covers it, so a click on the frame is a trusted click on the link.
+function linkPage(href: string) {
+  const html = injectHtmlRenderBootstrap(
+    `<!doctype html><html><body><a href="${href}" style="position:fixed;inset:0">Thread</a></body></html>`,
+  );
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  return { url, [Symbol.dispose]: () => URL.revokeObjectURL(url) };
+}
+
 describe("HtmlRenderDocument", () => {
+  it("opens a T3 thread link in the app when the client knows its environment", async () => {
+    links.knownEnvironments = new Set(["environment-known"]);
+    links.openLink.mockClear();
+    using page = linkPage("https://app.t3.codes/threads/environment-known/thread-1");
+    const onContentHeight = vi.fn();
+    await using screen = await render(
+      <HtmlRenderDocument src={page.url} title="Chats" onContentHeight={onContentHeight} />,
+    );
+    await vi.waitFor(() => expect(onContentHeight).toHaveBeenCalled());
+
+    await userEvent.click(screen.container.querySelector("iframe")!);
+
+    await vi.waitFor(() =>
+      expect(screen.router?.state.location.pathname).toBe("/environment-known/thread-1"),
+    );
+    expect(links.openLink).not.toHaveBeenCalled();
+  });
+
+  it("leaves a thread link of an unknown environment to the hosted app", async () => {
+    links.knownEnvironments = new Set();
+    links.openLink.mockClear();
+    const href = "https://app.t3.codes/threads/environment-elsewhere/thread-1";
+    using page = linkPage(href);
+    const onContentHeight = vi.fn();
+    await using screen = await render(
+      <HtmlRenderDocument src={page.url} title="Chats" onContentHeight={onContentHeight} />,
+    );
+    await vi.waitFor(() => expect(onContentHeight).toHaveBeenCalled());
+
+    await userEvent.click(screen.container.querySelector("iframe")!);
+
+    await vi.waitFor(() => expect(links.openLink).toHaveBeenCalledWith(href, expect.anything()));
+    expect(screen.router?.state.location.pathname).toBe("/");
+  });
+
   it("reports the page's first height and ignores messages from other windows", async () => {
     using pageUrl = (() => {
       const page = `<script>parent.postMessage(${JSON.stringify(sizeChanged(321))}, "*");</script>`;

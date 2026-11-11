@@ -22,6 +22,8 @@ import {
   matchesKeybindingShortcut,
   normalizeEventKey,
 } from "@t3tools/shared/keybindings";
+import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
+import { useNavigate } from "@tanstack/react-router";
 import {
   lazy,
   Suspense,
@@ -43,7 +45,9 @@ import { shortcutConflictKey } from "~/keybindings";
 import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
 import { readLocalApi } from "~/localApi";
 import { cn } from "~/lib/utils";
+import { readEnvironment } from "~/state/environments";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server";
+import { buildThreadRouteParams } from "~/threadRoutes";
 
 /**
  * The page reports the keys, and a page script can report any key it likes,
@@ -245,6 +249,7 @@ export function HtmlRenderDocument(props: {
       );
     },
   );
+  const navigate = useNavigate();
   const openChangeRequestLink = useOpenChangeRequestLink(props.threadRef);
   const openLink = useOpenLink(props.threadRef);
   const open = useEffectEvent((url: string, modifiers: { metaKey: boolean; ctrlKey: boolean }) => {
@@ -252,6 +257,15 @@ export function HtmlRenderDocument(props: {
       void readLocalApi()
         ?.shell.openExternal(url)
         .catch((cause: unknown) => console.error(cause));
+      return;
+    }
+    // A page reaches the parent only through http(s) links, so a thread link here is the hosted
+    // form. Open it in place, as chat Markdown does; an environment this client does not know
+    // still goes to the hosted app, which offers the apps that can open it.
+    const threadLink = parseThreadLinkHref(url);
+    if (threadLink?.environmentId && readEnvironment(threadLink.environmentId) !== null) {
+      const ref = { environmentId: threadLink.environmentId, threadId: threadLink.threadId };
+      void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(ref) });
       return;
     }
     if (
